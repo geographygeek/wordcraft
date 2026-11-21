@@ -1335,7 +1335,10 @@ fn insert(app: &mut WordApp, ui: &mut Ui) {
             menu_button(ui, app, "dropCap", Some("Drop Cap"), "Drop Cap", false, "insert.dropCap", drop_cap_items);
         });
         stack(ui, |ui| {
-            small(ui, app, "signature", None, "Signature Line", "insert.signatureLine", json!({}), false);
+            menu_button(ui, app, "signature", Some("Signature Line"), "Signature Line", false, "insert.signatureLine", |ui, app| {
+                mi(ui, app, "Signature Line", "insert.signatureLine", json!({}));
+                mi(ui, app, "Picture Signature…", "insert.signature", json!({}));
+            });
             small(ui, app, "dateTime", None, "Date & Time", "insert.dateTime", json!({}), false);
             small(ui, app, "object", None, "Object", "insert.object", json!({}), false);
         });

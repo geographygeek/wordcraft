@@ -59,6 +59,8 @@ pub(crate) enum AfterPick {
     OpenDocument,
     /// Insert the picked picture, or replace the pending Change Picture target.
     Picture,
+    /// Insert the picked picture as a cleaned up signature (Insert › Signature).
+    Signature,
     /// Save the document there, then carry on.
     SaveAs { after: AfterSave, document: u64 },
     /// Save a copy there in this format (`pdf`, `docx`, `png`…).
@@ -254,6 +256,10 @@ impl WordApp {
                 };
                 self.insert_or_change_picture(json!({"path": path}))
             }
+            AfterPick::Signature => {
+                let Some(path) = picked else { return Ok(json!({"cancelled": true})) };
+                self.run("insert.signature", json!({"path": path}))
+            }
             AfterPick::Font => {
                 let Some(path) = picked else { return Ok(json!({"cancelled": true})) };
                 self.add_fonts(vec![path])
@@ -386,6 +392,15 @@ impl WordApp {
             return;
         }
         let _ = self.ask_file(FileDialogRequest::Open { purpose: "picture".into() }, AfterPick::Picture);
+    }
+
+    /// Pick a picture of a signature and place it (Insert › Signature › Picture Signature…). The
+    /// web build's picker only inserts a plain picture, so there it does that.
+    pub(crate) fn pick_signature(&mut self) {
+        if self.services.open_async.is_some() {
+            return self.pick_picture();
+        }
+        let _ = self.ask_file(FileDialogRequest::Open { purpose: "picture".into() }, AfterPick::Signature);
     }
 
     /// Pick a font file to add (Add Font…; web: it arrives through the inbox).

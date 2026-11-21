@@ -134,6 +134,8 @@ Ranked, to beta (detail and remaining milestones in [docs/roadmap.md](docs/roadm
 
 ## Progress log
 
+- 2026-11-21: Insert › Signature: Picture Signature… places a photo or scan of a handwritten signature as a cleaned, trimmed, transparent picture (`insert.signature`); Signature Line stays beside it.
+
 Imported Word 97–2003 `.doc`/`.dot` files now ask for a supported DOCX target on interactive Save (#2445). Save before Close waits for that write; cancel or failure keeps the draft and original file. This does not add binary Word output. Late Save As answers are rejected before writing if automation has replaced the document.
 
 - 2026-10-19: Restrict Editing: with Filling in forms enforced, inserting content controls, their Properties and Remove Content Control are refused, as in Word (it greys them out), so a form's fields stay as they are and only their content is filled in.

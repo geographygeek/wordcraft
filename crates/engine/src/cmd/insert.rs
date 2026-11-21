@@ -25,6 +25,8 @@ pub fn specs() -> Vec<CommandSpec> {
         CommandSpec::new("insert.coverPage", "Cover Page", "Insert › Pages", cover_page).params(r#"{"title"?: string, "subtitle"?: string, "author"?: string}"#),
         CommandSpec::new("insert.table", "Table", "Insert › Tables", table).params(r#"{"rows": n, "cols": n, "style"?: string}"#),
         CommandSpec::new("insert.picture", "Pictures", "Insert › Illustrations", picture).params(r#"{"path"?: string, "data"?: base64, "width"?: pt, "alt"?: string}"#),
+        CommandSpec::new("insert.signature", "Signature", "Insert › Text", signature)
+            .params(r#"{"path"?: string, "data"?: base64, "width"?: pt (default 144), "signer"?: string, "clean"?: bool (default true)}"#),
         CommandSpec::new("insert.icon", "Icons", "Insert › Illustrations", icon)
             .params(r#"{"id"?: string (omit to list the library), "color"?: "RRGGBB", "size"?: pt, "query"?: string, "category"?: string}"#),
         CommandSpec::new("insert.shape", "Shapes", "Insert › Illustrations", shape)
@@ -223,6 +225,74 @@ pub(crate) fn picture(s: &mut Session, v: &Value) -> CmdResult {
         return sel_result(s);
     };
     place_picture(s, bytes, p::f32(v, "width"), p::str(v, "alt").unwrap_or(""))
+}
+
+/// Insert › Signature: put a picture of a handwritten signature (a scan or a phone photo, as a
+/// path or base64 `data`) into the text at the caret. With `clean` (the default) the paper turns
+/// transparent and the empty margin is trimmed, so it sits on a line like real ink. `width` is in
+/// points (default 2 inches). Without a picture it asks a front end for its file picker.
+fn signature(s: &mut Session, v: &Value) -> CmdResult {
+    let bytes = if let Some(d) = p::str(v, "data") {
+        base64_decode(d).ok_or_else(|| CmdError::Params("bad base64 data".into()))?
+    } else if let Some(path) = p::str(v, "path") {
+        crate::io::read_file(path).map_err(CmdError::Failed)?
+    } else {
+        s.ui_requests.push(json!({"open": "insertSignature"}));
+        return sel_result(s);
+    };
+    let bytes = if p::bool(v, "clean").unwrap_or(true) { clean_signature(&bytes)? } else { bytes };
+    let alt = match p::str(v, "signer").map(str::trim).filter(|n| !n.is_empty()) {
+        Some(name) => format!("Signature of {name}"),
+        None => "Signature".to_string(),
+    };
+    place_picture(s, bytes, Some(p::f32(v, "width").unwrap_or(144.0)), &alt)
+}
+
+/// A scanned signature made ready to place: paper (light pixels) turns transparent in steps, ink
+/// keeps its own colour, and the empty margin is trimmed to a few pixels. A picture that already
+/// has transparency is only trimmed. Returns PNG bytes.
+fn clean_signature(bytes: &[u8]) -> Result<Vec<u8>, CmdError> {
+    // Lightness at or above PAPER is paper; at or below INK is solid ink; in between, part ink.
+    const PAPER: u32 = 225;
+    const INK: u32 = 120;
+    const MAX_PIXELS: u64 = 60_000_000;
+    const MAX_WIDTH: u32 = 1500;
+    let img = image::load_from_memory(bytes).map_err(|e| CmdError::Failed(format!("couldn't read the signature picture: {e}")))?;
+    let (w, h) = (img.width(), img.height());
+    if u64::from(w) * u64::from(h) > MAX_PIXELS {
+        return Err(CmdError::Failed("the signature picture is too large (over 60 megapixels)".into()));
+    }
+    let mut rgba = img.to_rgba8();
+    if rgba.pixels().all(|px| px.0[3] == 255) {
+        for px in rgba.pixels_mut() {
+            let [r, g, b, _] = px.0;
+            let light = u32::from(r.min(g).min(b));
+            px.0[3] = (PAPER.saturating_sub(light).min(PAPER - INK) * 255 / (PAPER - INK)) as u8;
+        }
+    }
+    // The box around the ink.
+    let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0u32, 0u32);
+    for (x, y, px) in rgba.enumerate_pixels() {
+        if px.0[3] > 16 {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+    }
+    if x0 > x1 || y0 > y1 {
+        return Err(CmdError::Failed("no ink found: use a dark signature on light paper".into()));
+    }
+    const MARGIN: u32 = 4;
+    let (cx0, cy0) = (x0.saturating_sub(MARGIN), y0.saturating_sub(MARGIN));
+    let (cx1, cy1) = (x1.saturating_add(MARGIN).min(w - 1), y1.saturating_add(MARGIN).min(h - 1));
+    let mut out = image::imageops::crop_imm(&rgba, cx0, cy0, cx1 - cx0 + 1, cy1 - cy0 + 1).to_image();
+    if out.width() > MAX_WIDTH {
+        let nh = (u64::from(out.height()) * u64::from(MAX_WIDTH) / u64::from(out.width())).max(1) as u32;
+        out = image::imageops::resize(&out, MAX_WIDTH, nh, image::imageops::FilterType::Triangle);
+    }
+    let mut png = Vec::new();
+    image::DynamicImage::ImageRgba8(out)
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .map_err(|e| CmdError::Failed(e.to_string()))?;
+    Ok(png)
 }
 
 /// The media extension of an encoded image by its magic bytes, as `image_size` accepted it

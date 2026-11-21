@@ -7437,6 +7437,69 @@ fn insert_picture_takes_a_windows_metafile() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `w` x `h` PNG whose pixels come from `paint`.
+fn signature_png(w: u32, h: u32, paint: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> {
+    let img = image::RgbaImage::from_fn(w, h, |x, y| image::Rgba(paint(x, y)));
+    let mut out = Vec::new();
+    image::DynamicImage::ImageRgba8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+    out
+}
+
+/// Insert › Signature: a scan on white paper loses the paper, keeps the ink colour, is trimmed to
+/// the ink and placed at the asked width with its proportions.
+#[test]
+fn insert_signature_cleans_trims_and_places_the_scan() {
+    use wordcraft_doc::para::InlineObject;
+    // A 200 x 100 white scan with a 40 x 10 blue stroke at (50, 40).
+    let scan = signature_png(200, 100, |x, y| if (50..90).contains(&x) && (40..50).contains(&y) { [20, 30, 150, 255] } else { [255, 255, 255, 255] });
+    let data = crate::cmd::insert::base64_encode(&scan);
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    let r = run(&mut s, "insert.signature", json!({"data": data, "width": 120, "signer": "Laura Neher"}));
+    // Trimmed to the stroke plus a 4 pixel margin: 48 x 18, so 120 pt wide is 45 pt high.
+    assert_eq!((r["width"].as_f64(), r["height"].as_f64()), (Some(120.0), Some(45.0)), "{r}");
+    let key = r["media"].as_str().unwrap().to_string();
+    let placed = image::load_from_memory(s.doc.media.get(&key).unwrap()).unwrap().to_rgba8();
+    assert_eq!(placed.dimensions(), (48, 18));
+    assert_eq!(placed.get_pixel(0, 0).0[3], 0, "paper is transparent");
+    assert_eq!(placed.get_pixel(24, 9).0, [20, 30, 150, 255], "ink keeps its colour");
+    let mut alt = None;
+    s.doc.objects_in_reading_order(&mut |o| {
+        if let InlineObject::Image { alt: a, .. } = o {
+            alt = Some(a.clone());
+        }
+    });
+    assert_eq!(alt.as_deref(), Some("Signature of Laura Neher"));
+}
+
+#[test]
+fn insert_signature_keeps_transparency_and_can_skip_cleaning() {
+    // Already transparent: only trimmed, colour untouched.
+    let red = signature_png(60, 60, |x, y| if (10..20).contains(&x) && (30..40).contains(&y) { [200, 0, 0, 255] } else { [0, 0, 0, 0] });
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    let r = run(&mut s, "insert.signature", json!({"data": crate::cmd::insert::base64_encode(&red)}));
+    let placed = image::load_from_memory(s.doc.media.get(r["media"].as_str().unwrap()).unwrap()).unwrap().to_rgba8();
+    assert_eq!(placed.dimensions(), (18, 18));
+    assert_eq!(placed.get_pixel(9, 9).0, [200, 0, 0, 255]);
+    // clean: false places the picture as it is.
+    let white = signature_png(30, 20, |_, _| [255, 255, 255, 255]);
+    let r = run(&mut s, "insert.signature", json!({"data": crate::cmd::insert::base64_encode(&white), "clean": false}));
+    assert_eq!(s.doc.media.get(r["media"].as_str().unwrap()).map(|b| b.as_slice()), Some(white.as_slice()));
+}
+
+#[test]
+fn insert_signature_refuses_bad_pictures_and_asks_for_a_file_without_one() {
+    let mut s = Session::new(wordcraft_doc::Document::new());
+    let blank = signature_png(40, 40, |_, _| [255, 255, 255, 255]);
+    let err = s.run("insert.signature", &json!({"data": crate::cmd::insert::base64_encode(&blank)})).unwrap_err();
+    assert!(err.to_string().contains("no ink"), "{err}");
+    assert!(s.run("insert.signature", &json!({"data": crate::cmd::insert::base64_encode(b"not a picture")})).is_err());
+    assert!(s.run("insert.signature", &json!({"data": "%%%"})).is_err());
+    // No picture given: a front end is asked for its file picker; nothing is inserted.
+    run(&mut s, "insert.signature", json!({}));
+    assert_eq!(s.ui_requests.last().and_then(|r| r.get("open")).and_then(|o| o.as_str()), Some("insertSignature"));
+    assert!(s.doc.media.is_empty());
+}
+
 /// Change Picture must keep the replacement's own format: the part's name and content type
 /// come from the extension, so a JPEG stored as `imageN.png` saves declared `image/png` (Word
 /// and LibreOffice then show a broken picture).
